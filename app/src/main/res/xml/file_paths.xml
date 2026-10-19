@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 共享范围：缓存目录下的 share/（分享时间表 PNG 用） -->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

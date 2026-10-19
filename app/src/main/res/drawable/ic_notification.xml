@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：五根柱的单色剪影。
+     为什么单独做一个而不是复用启动图标：small icon 只取 alpha 做剪影，
+     拿自适应图标（背景不透明）去当 small icon 会渲染成一整个实心方块。
+     几何同 tools/gen-app-icon.cjs，尺寸取 24x24 的标准通知图标画布。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M1.5,14.275 A1.726,1.726 0 0 1 4.953,14.275 L4.953,17.605 A1.726,1.726 0 0 1 1.5,17.605 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5.887,9.969 A1.726,1.726 0 0 1 9.339,9.969 L9.339,17.605 A1.726,1.726 0 0 1 5.887,17.605 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10.274,12.487 A1.726,1.726 0 0 1 13.726,12.487 L13.726,17.605 A1.726,1.726 0 0 1 10.274,17.605 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M14.661,6.395 A1.726,1.726 0 0 1 18.113,6.395 L18.113,17.605 A1.726,1.726 0 0 1 14.661,17.605 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M19.047,11.553 A1.726,1.726 0 0 1 22.5,11.553 L22.5,17.605 A1.726,1.726 0 0 1 19.047,17.605 Z" />
+</vector>

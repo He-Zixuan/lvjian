@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 滤见清单：权限、服务、入口声明 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- AI API 调用 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 保活前台服务通知（Android 13+ 需运行时授权） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 前台服务（Android 14+ 必须声明类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 开机自启恢复保活 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 引导用户关闭电池优化时使用 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Android 11+ 读取已安装应用列表（“应用”页展示与自选监控范围；个人侧载自用，无过审顾虑） -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- 计划提醒：要在"计划开始前 N 分钟"这个准确时刻叫醒，必须用精确闹钟。
+         Android 12+ 这是特殊权限，用户可在系统设置里授予/撤销；没授予时我们退化成不精确闹钟
+         （可能晚几分钟）并在设置卡里提示去开，绝不因为缺权限就整个功能不工作。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- Android 11+ 包可见性：检测微信/QQ 是否安装（登录按钮可用态判断） -->
+    <queries>
+        <package android:name="com.tencent.mm" />
+        <package android:name="com.tencent.mobileqq" />
+        <package android:name="com.tencent.tim" />
+    </queries>
+
+    <application
+        android:name=".LvJianApp"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.LvJian"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
+        <!-- 主界面 -->
+        <activity
+            android:name=".MainActivity"
+            android:launchMode="singleTop"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 核心：通知监听服务（伪免打扰的数据来源与拦截执行器） -->
+        <service
+            android:name=".notify.LvJianListenerService"
+            android:label="@string/listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- 保活前台服务：降低被系统后台回收的概率（国产 ROM 尤其需要） -->
+        <service
+            android:name=".work.KeeperService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="在后台保持微信通知监听与消息收集" />
+        </service>
+
+        <!-- 分享时间表图片：缓存文件经 FileProvider 授权给微信/QQ 等 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- 开机后恢复保活 -->
+        <receiver
+            android:name=".work.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 计划提醒的闹钟接收器：系统到点发这条广播，由它发通知并排下一次。
+             exported=false —— 只由我们自己的 PendingIntent 触发，不需要外部唤起。 -->
+        <receiver
+            android:name=".notify.PlanReminderReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

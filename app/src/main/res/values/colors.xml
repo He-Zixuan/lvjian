@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 仅启动期使用的颜色；Compose 内同款色值见 ui/theme/Theme.kt -->
+<resources>
+    <color name="lv_background">#F6F2E7</color>
+    <!-- 自适应图标背景：白底（对齐参考图），前景是品牌黄的五根圆头柱 -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

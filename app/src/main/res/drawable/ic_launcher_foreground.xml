@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：品牌黄的五根圆头柱（"信号/进度"意象）。
+     几何由 tools/gen-app-icon.cjs 从参考图实测生成，改尺寸请改脚本后重跑，别手改数值。
+     108x108 画布 / 内容宽 59 —— 连四角都在中间 72 圆的内部，圆形遮罩下不会被切。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#F7C948"
+        android:pathData="M24.5,60.391 A4.85,4.85 0 0 1 34.2,60.391 L34.2,69.749 A4.85,4.85 0 0 1 24.5,69.749 Z" />
+    <path
+        android:fillColor="#F7C948"
+        android:pathData="M36.825,48.294 A4.85,4.85 0 0 1 46.525,48.294 L46.525,69.749 A4.85,4.85 0 0 1 36.825,69.749 Z" />
+    <path
+        android:fillColor="#F7C948"
+        android:pathData="M49.15,55.369 A4.85,4.85 0 0 1 58.85,55.369 L58.85,69.749 A4.85,4.85 0 0 1 49.15,69.749 Z" />
+    <path
+        android:fillColor="#F7C948"
+        android:pathData="M61.475,38.251 A4.85,4.85 0 0 1 71.175,38.251 L71.175,69.749 A4.85,4.85 0 0 1 61.475,69.749 Z" />
+    <path
+        android:fillColor="#F7C948"
+        android:pathData="M73.8,52.745 A4.85,4.85 0 0 1 83.5,52.745 L83.5,69.749 A4.85,4.85 0 0 1 73.8,69.749 Z" />
+</vector>

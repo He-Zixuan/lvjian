@@ -1,0 +1,6 @@
+# Copy to signing.properties and replace the placeholders with your own credentials.
+# Paths are relative to the project root; use forward slashes on Windows.
+storeFile=keystores/your-release.keystore
+storePassword=REPLACE_WITH_YOUR_STORE_PASSWORD
+keyAlias=REPLACE_WITH_YOUR_KEY_ALIAS
+keyPassword=REPLACE_WITH_YOUR_KEY_PASSWORD

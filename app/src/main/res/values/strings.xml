@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文案资源 -->
+<resources>
+    <string name="app_name">滤见</string>
+    <string name="listener_label">滤见消息收集</string>
+    <string name="keeper_channel_name">后台收集</string>
+    <string name="keeper_notification_title">滤见正在后台收集群消息</string>
+    <string name="keeper_notification_text">点按打开滤见</string>
+</resources>
