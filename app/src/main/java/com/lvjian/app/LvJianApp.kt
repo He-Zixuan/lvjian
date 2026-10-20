@@ -32,12 +32,12 @@ class LvJianApp : Application() {
     private suspend fun ensureBuiltinRule() {
         val dao = db.ruleDao()
         dao.deleteByNames(listOf("家教", "闲聊", "屏蔽某人"))
-        val pattern = BUILTIN_FILTER_PATTERN
+        val pattern = com.lvjian.app.rules.TriageRules.PATTERN
         val existing = dao.builtin()
         if (existing == null) {
             dao.insert(
                 com.lvjian.app.data.RuleEntity(
-                    name = "滤掉无用信息",
+                    name = com.lvjian.app.rules.TriageRules.NAME,
                     type = com.lvjian.app.data.RuleType.AI_PROMPT,
                     pattern = pattern,
                     scopeKeys = com.lvjian.app.data.ScopeKeys.ALL,
@@ -58,13 +58,9 @@ class LvJianApp : Application() {
             private set
 
         /**
-         * 分类开始时消息已在未整理。AI 只决定进待办，还是进已过滤。
-         * 验证码时效短，进已过滤，不进待办。闲扯滤掉。约饭是要做的事，留下。
+         * 整理准则的正文在 TriageRules.PATTERN（唯一来源），这里只保留引用，
+         * 免得代码里出现第二份会走样的规则。
          */
-        const val BUILTIN_FILTER_PATTERN =
-            "只滤掉明确无用的消息：系统状态（充电、USB、互传、调试、电量）、营销广告和促销、" +
-                "验证码、账号安全播报、与工作无关的闲聊、表情包刷屏。约饭不要过滤，放进待办。" +
-                "以下一律留下，不得过滤：通知里写了「有人@我」、@所有人、通知地点或时间变更、要求确认、截止、提交、" +
-                "问卷、考核、成绩、到场、回复、约饭。群里只 @了别人、没有「有人@我」也没有 @所有人的，过滤掉。拿不准时留下。"
+        val BUILTIN_FILTER_PATTERN: String get() = com.lvjian.app.rules.TriageRules.PATTERN
     }
 }

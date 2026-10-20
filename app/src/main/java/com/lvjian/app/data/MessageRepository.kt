@@ -456,7 +456,7 @@ class MessageRepository(
 
     /**
      * 一键整理：把全部未整理条目交给批量引擎判定。
-     * @param onProgress 进度回调（第几批/共几批），UI 更新操作卡文案
+     * @param onProgress 进度回调（已成功保存条数/本次总条数），UI 更新操作卡文案
      * @return 整理结果汇总；API 未配置返回 null
      */
     suspend fun organizePendingBatch(onProgress: (done: Int, total: Int) -> Unit): BatchAiFilter.BatchResult? {
@@ -467,8 +467,10 @@ class MessageRepository(
         val enabledRules = rules.enabledRules()
         val keepFiltered = prefs.currentKeepFiltered()
         val engine = BatchAiFilter(aiClient, config)
-        return engine.run(batch, enabledRules, onProgress) { msgId, filtered, ruleName, aiState ->
+        return engine.run(batch, enabledRules, onProgress) { msgId, filtered, ruleName, aiState, summary ->
             messages.setFilterResult(msgId, filtered, ruleName, aiState)
+            // 批量判定同时产出摘要：保留的条目写进清单，列表不再回落成原文首行
+            if (summary.isNotBlank()) messages.setSummary(msgId, summary)
             // 「已过滤直接消失」开关关闭时：条目保留在已过滤；开关开（默认进复查）时同理走 filtered 标记
             // keepFiltered=false 的语义是命中后不留痕，这里沿用：直接删除
             if (filtered && !keepFiltered) messages.deleteById(msgId)

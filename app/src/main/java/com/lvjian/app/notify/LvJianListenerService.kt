@@ -5,7 +5,6 @@
 package com.lvjian.app.notify
 
 import android.app.Notification
-import android.content.ComponentName
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.lvjian.app.LvJianApp
@@ -13,69 +12,95 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class LvJianListenerService : NotificationListenerService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 收集范围缓存：只接收白名单里的包（推荐应用 + 用户显式开启）。 */
-    @Volatile
-    private var enabledPackages: Set<String> = emptySet()
-
-    /**
-     * 排除配置是否已加载完成。
-     * 未加载前一律不处理：既不收集（避免短暂绕过已保存的排除），更不会执行任何接管动作。
-     */
-    @Volatile
-    private var configLoaded: Boolean = false
+    // 通知先排队，等待已保存的收集范围；串行入库保证回调与补收不会穿过去重检查。
+    private data class QueuedNotification(val notification: StatusBarNotification, val replay: Boolean)
+    private val notifications = Channel<QueuedNotification>(Channel.UNLIMITED)
 
     override fun onCreate() {
         super.onCreate()
         instance = this
-        // 订阅启用范围：用户开启/关闭应用后自动刷新，无需重启服务
         scope.launch {
-            LvJianApp.instance.repo.enabledAppPackages().collect {
-                enabledPackages = it
-                configLoaded = true
+            for (queued in notifications) {
+                val sbn = queued.notification
+                try {
+                    val enabled = LvJianApp.instance.repo.enabledAppPackages().first()
+                    if (sbn.packageName !in enabled) continue
+                    val parsed = ParserRegistry.forPackage(sbn.packageName).parse(sbn)
+                    if (parsed.isNotEmpty()) {
+                        // 补收只写清单，不撤掉或重响已经存在的来源通知。
+                        LvJianApp.instance.repo.ingestAll(parsed, if (queued.replay) null else sbn.key, sbn.notification.contentIntent)
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 一条异常通知不能让后续消息全部停止收录；不记录通知正文。
+                    android.util.Log.w("LvJianListener", "Could not collect notification from ${sbn.packageName}", e)
+                }
             }
+        }
+        scope.launch {
+            LvJianApp.instance.repo.enabledAppPackages().collect { replayActiveNotifications() }
+        }
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        _connected.value = true
+        replayActiveNotifications()
+    }
+
+    private fun replayActiveNotifications() {
+        if (!_connected.value) return
+        try {
+            activeNotifications?.forEach { enqueue(it, replay = true) }
+        } catch (e: Exception) {
+            android.util.Log.w("LvJianListener", "Could not replay active notifications", e)
         }
     }
 
     override fun onDestroy() {
-        if (instance === this) instance = null
+        if (instance === this) {
+            _connected.value = false
+            instance = null
+        }
+        notifications.close()
         scope.cancel()
         super.onDestroy()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        enqueue(sbn, replay = false)
+    }
+
+    private fun enqueue(sbn: StatusBarNotification, replay: Boolean) {
         // 硬排除自己：接管「提醒」档的重发通知来自滤见，绝不能被再收一遍（防自循环）
         if (sbn.packageName == packageName) return
-        // 配置未加载完成前不处理（保守：不绕过排除、不执行接管）
-        if (!configLoaded) return
-        // 只收集默认推荐应用及用户明确开启的应用。
-        if (sbn.packageName !in enabledPackages) return
-
         // 跳过“聚合摘要通知”：内容只有“x 条新消息”，没有逐条正文
         if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
 
-        // 经注册表取该应用的解析器（全部是通用解析器，后续可按包名定制）
-        val parsed = ParserRegistry.forPackage(sbn.packageName).parse(sbn)
-        if (parsed.isEmpty()) return
-
-        // 整条通知交给仓储：通知处置（撤掉/有声重发，仅当该应用接管已启用）一次完成，逐条消息去重入库
-        // contentIntent 转交给重发通知，点按行为与来源应用原通知一致
-        scope.launch {
-            LvJianApp.instance.repo.ingestAll(parsed, sbn.key, sbn.notification.contentIntent)
-        }
+        notifications.trySend(QueuedNotification(sbn, replay))
     }
 
     /** 监听被系统断开（杀进程/权限波动）时请求重新绑定，减少断收窗口 */
     override fun onListenerDisconnected() {
-        requestRebind(ComponentName(this, LvJianListenerService::class.java))
+        _connected.value = false
+        com.lvjian.app.work.SystemHelper.rebindNotificationListener(this)
+        super.onListenerDisconnected()
     }
 
     companion object {
+        private val _connected = MutableStateFlow(false)
+        val connected = _connected.asStateFlow()
         /** 当前存活实例（仓储回调取消通知用）；服务未运行时为空 */
         var instance: LvJianListenerService? = null
             private set

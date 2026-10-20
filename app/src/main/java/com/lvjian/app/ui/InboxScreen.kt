@@ -443,15 +443,33 @@ fun DoneListScreen(vm: MainViewModel, onBack: () -> Unit) {
 @Composable
 private fun OrganizeCard(vm: MainViewModel, pendingCount: Int, onOpenRules: () -> Unit) {
     val organizing by vm.organizing.collectAsStateWithLifecycle()
+    val progress by vm.organizeProgress.collectAsStateWithLifecycle()
+    val displayedDone = key(progress?.runId) { rollingCount(progress?.done ?: 0) }
 
     LvCard(Modifier.fillMaxWidth()) {
         Text("未整理 · $pendingCount 条", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(10.dp))
         LvPrimaryButton(
-            text = if (organizing != null) "正在整理 ${organizing!!.first}/${organizing!!.second}…" else "一键整理",
+            text = when {
+                organizing == null -> "一键整理"
+                progress == null -> "准备整理…"
+                else -> "已整理 $displayedDone/${progress!!.total} 条"
+            },
             onClick = { if (organizing == null) vm.organizeBatch() },
             modifier = Modifier.fillMaxWidth()
         )
+        if (organizing != null || progress != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                when {
+                    organizing != null -> "正在分析消息，请稍候…"
+                    progress!!.done < progress!!.total ->
+                        "已整理 $displayedDone/${progress!!.total} 条，${progress!!.total - progress!!.done} 条未成功，可重试"
+                    else -> "已整理 $displayedDone/${progress!!.total} 条"
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
         Spacer(Modifier.height(8.dp))
         // 整理规则入口：进规则管理子页（底部导航已无独立 tab）
         Row(

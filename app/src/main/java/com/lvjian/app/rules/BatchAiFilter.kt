@@ -27,20 +27,21 @@ class BatchAiFilter(
      * 执行批量整理。
      * @param batch 全部未整理条目（按时间升序）
      * @param enabledRules 全部启用的规则（内部再按每条消息的适用范围筛选）
-     * @param onProgress 进度回调（已完成条数, 总条数）
-     * @param apply 落库回调：(消息id, 是否过滤, 命中规则名, AI状态)
+     * @param onProgress 进度回调（已成功保存条数, 本次总条数）；失败条目不计为已整理
+     * @param apply 落库回调：(消息id, 是否过滤, 命中规则名, AI状态, 一句话摘要)
      */
     suspend fun run(
         batch: List<MessageEntity>,
         enabledRules: List<RuleEntity>,
         onProgress: (Int, Int) -> Unit,
-        apply: suspend (msgId: Long, filtered: Boolean, ruleName: String?, aiState: Int) -> Unit
+        apply: suspend (msgId: Long, filtered: Boolean, ruleName: String?, aiState: Int, summary: String) -> Unit
     ): BatchResult {
         var filtered = 0
         var kept = 0
         var failed = 0
         var calls = 0
         val total = batch.size
+        onProgress(0, total)
 
         // 1) 按适用规则集签名分组：规则有作用范围，不同群适用的规则集可能不同。
         //    分组后每组一次调用只带该组规则，语义与实时逐条判定完全等价。
@@ -51,9 +52,9 @@ class BatchAiFilter(
             }
             if (applicable.isEmpty()) {
                 // 规则中途被删/停用：这条不再需要 AI，直接转为普通待处理
-                apply(msg.id, false, null, AIState.NONE)
+                apply(msg.id, false, null, AIState.NONE, "")
                 kept++
-                onProgress(filtered + kept + failed, total)
+                onProgress(filtered + kept, total)
                 continue
             }
             val signature = applicable.sortedBy { it.id }.joinToString(",") { it.id.toString() }
@@ -62,7 +63,6 @@ class BatchAiFilter(
         }
 
         // 2) 每组按 40 条/块 切块（控制单次请求体与输出长度）
-        var done = filtered + kept + failed
         for ((_, pair) in groups) {
             val (groupRules, msgs) = pair
             for (chunk in msgs.chunked(CHUNK_SIZE)) {
@@ -74,8 +74,6 @@ class BatchAiFilter(
                 } catch (e: Exception) {
                     // 整块失败（重试一次后仍败）：保持未整理，不丢
                     failed += chunk.size
-                    done += chunk.size
-                    onProgress(done, total)
                     continue
                 }
                 // 3) 逐条落库；响应里缺失的编号算失败（留在未整理等下次）
@@ -83,16 +81,17 @@ class BatchAiFilter(
                     val v = verdicts[idx]
                     if (v == null) {
                         failed++
-                    } else if (v.first) {
-                        apply(msg.id, true, v.second, AIState.DONE)
+                    } else if (v.filter) {
+                        apply(msg.id, true, v.ruleName, AIState.DONE, "")
                         filtered++
                     } else {
-                        apply(msg.id, false, null, AIState.DONE)
+                        // 摘要和判定同一次调用拿到，保留的条目直接写进清单
+                        apply(msg.id, false, null, AIState.DONE, v.summary)
                         kept++
                     }
+                    // 每条结果保存后立即发布真实进度，不等整块结束才跳数。
+                    onProgress(filtered + kept, total)
                 }
-                done += chunk.size
-                onProgress(done, total)
             }
         }
         return BatchResult(filtered, kept, failed, calls)
@@ -102,7 +101,7 @@ class BatchAiFilter(
     private suspend fun callWithRetry(
         rules: List<RuleEntity>,
         numbered: List<Pair<Int, MessageEntity>>
-    ): Map<Int, Pair<Boolean, String?>> {
+    ): Map<Int, AiClient.BatchVerdict> {
         val rulesBlock = rules.mapIndexed { i, r -> "${i + 1}.「${r.name}」${r.pattern}" }
             .joinToString("\n")
         val messagesBlock = numbered.joinToString("\n") { (idx, m) ->

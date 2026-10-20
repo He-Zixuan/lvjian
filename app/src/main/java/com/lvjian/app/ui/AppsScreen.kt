@@ -42,6 +42,7 @@ private data class InstalledApp(
 fun AppsScreen(
     vm: MainViewModel,
     notifAccess: Boolean,
+    listenerBound: Boolean,
     onSettings: () -> Unit,
     onOpenConvs: (String) -> Unit,
     onOpenMarketing: () -> Unit
@@ -106,13 +107,24 @@ fun AppsScreen(
         // ---- 通知访问状态卡（未开启/被撤销时给修复入口）----
         item {
             LvCard(Modifier.fillMaxWidth()) {
-                if (notifAccess) {
+                if (notifAccess && listenerBound) {
                     Text("正在收集", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(2.dp))
                     Text(
                         "已收集推荐应用的通知；其他应用默认关闭，可在此开启，或用上方按钮一次开启全部。",
                         style = MaterialTheme.typography.bodySmall
                     )
+                } else if (notifAccess) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("通知监听未连接", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(2.dp))
+                            Text("通知访问已开启，但收集服务尚未连接。点击重新连接以恢复收集。", style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = { SystemHelper.rebindNotificationListener(context) }) {
+                            Text("重新连接", color = LvInk, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

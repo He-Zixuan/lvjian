@@ -31,6 +31,10 @@ interface MessageDao {
     @Query("UPDATE messages SET filtered = :filtered, matchedRule = :rule, aiState = :aiState WHERE id = :id")
     suspend fun setFilterResult(id: Long, filtered: Boolean, rule: String?, aiState: Int)
 
+    /** 只写一句话摘要（批量整理时判定和摘要一起拿到，单独落库） */
+    @Query("UPDATE messages SET summary = :summary WHERE id = :id")
+    suspend fun setSummary(id: Long, summary: String)
+
     /** 写入 AI 摘要和加入计划预填。日期 0、时间 -1 表示这项没生成出来。 */
     @Query(
         """UPDATE messages SET summary = :summary, planTitle = :planTitle, planPlace = :planPlace,

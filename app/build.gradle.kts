@@ -24,8 +24,8 @@ android {
         applicationId = "com.lvjian.app"
         minSdk = 26          // 通知渠道/搁置等 API 从 26 起完整；S50 是 Android 16，远高于此
         targetSdk = 35
-        versionCode = 52
-        versionName = "0.10.5"   // 蛋黄的删除/改期能力
+        versionCode = 56
+        versionName = "0.10.9"   // 一键整理实时条数进度；当前周标题改为本周
     }
 
     // 从本机配置读取签名，不在公开源码中保存密码或密钥库。

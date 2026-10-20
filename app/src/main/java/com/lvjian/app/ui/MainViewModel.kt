@@ -77,13 +77,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 整理进度：null=未在整理；否则 (已完成条数, 总条数) */
     private val _organizing = MutableStateFlow<Pair<Int, Int>?>(null)
     val organizing: StateFlow<Pair<Int, Int>?> = _organizing.asStateFlow()
+    data class OrganizeProgress(val done: Int, val total: Int, val runId: Long)
+    private val _organizeProgress = MutableStateFlow<OrganizeProgress?>(null)
+    val organizeProgress = _organizeProgress.asStateFlow()
+    private var organizeRunId = 0L
 
     fun organizeBatch() {
         if (_organizing.value != null) return  // 防重复点击
+        _organizing.value = 0 to 0
+        _organizeProgress.value = null
+        val runId = ++organizeRunId
         viewModelScope.launch {
-            _organizing.value = 0 to 0
             try {
-                val result = repo.organizePendingBatch { done, total -> _organizing.value = done to total }
+                val result = repo.organizePendingBatch { done, total ->
+                    _organizeProgress.value = OrganizeProgress(done, total, runId)
+                    _organizing.value = done to total
+                }
                 if (result == null) {
                     showToast("先在「设置 → AI」里配好接口再整理")
                 } else {

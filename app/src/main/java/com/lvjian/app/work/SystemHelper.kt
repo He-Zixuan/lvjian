@@ -8,8 +8,18 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
+import android.content.pm.PackageManager
+import com.lvjian.app.notify.LvJianListenerService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 object SystemHelper {
+    private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var recoveryJob: Job? = null
 
     /** 通知访问权是否已授予本应用 */
     fun hasNotificationAccess(context: Context): Boolean =
@@ -19,25 +29,36 @@ object SystemHelper {
      * 监听服务此刻有没有绑上。权限开着但系统没绑定（省电、被杀、重装后）时，新通知不会进来。
      */
     fun isNotificationListenerBound(context: Context): Boolean {
-        val cn = android.content.ComponentName(context, com.lvjian.app.notify.LvJianListenerService::class.java)
-        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners").orEmpty()
-        if (!flat.contains(cn.flattenToString())) return false
-        return try {
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            val method = manager.javaClass.getMethod("isNotificationListenerAccessGranted", android.content.ComponentName::class.java)
-            method.invoke(manager, cn) as? Boolean ?: com.lvjian.app.notify.LvJianListenerService.instance != null
-        } catch (e: Exception) {
-            com.lvjian.app.notify.LvJianListenerService.instance != null
-        }
+        return hasNotificationAccess(context) && LvJianListenerService.connected.value
     }
 
+    @Synchronized
     fun rebindNotificationListener(context: Context) {
-        if (!hasNotificationAccess(context)) return
-        val cn = android.content.ComponentName(context, com.lvjian.app.notify.LvJianListenerService::class.java)
-        try {
-            android.service.notification.NotificationListenerService.requestRebind(cn)
-        } catch (e: Exception) {
-            // 系统拒绝时下次打开应用再试。权限还在，不需要用户重开开关。
+        if (!hasNotificationAccess(context) || isNotificationListenerBound(context) || recoveryJob?.isActive == true) return
+        val appContext = context.applicationContext
+        val cn = android.content.ComponentName(appContext, LvJianListenerService::class.java)
+        recoveryJob = recoveryScope.launch {
+            try {
+                ListenerRecovery(
+                    hasAccess = { hasNotificationAccess(appContext) },
+                    isConnected = { LvJianListenerService.connected.value },
+                    requestRebind = { android.service.notification.NotificationListenerService.requestRebind(cn) },
+                    refreshComponent = {
+                        // 某些 ROM 保留授权却丢失绑定，仅 requestRebind 无效。
+                        // 仅刷新本应用服务，不修改用户的通知访问授权。
+                        val pm = appContext.packageManager
+                        try {
+                            pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
+                        } finally {
+                            pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP)
+                        }
+                    },
+                    awaitBinding = { delay(1500) }
+                ).recover()
+            } catch (e: Exception) {
+                // 不把恢复失败伪装成正在收集；保留页面上的手动重连入口。
+                android.util.Log.w("LvJianListener", "Notification listener recovery failed", e)
+            }
         }
     }
     fun openNotificationAccessSettings(context: Context) {

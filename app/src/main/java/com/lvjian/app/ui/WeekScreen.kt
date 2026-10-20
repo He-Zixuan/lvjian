@@ -3,13 +3,10 @@
 // 每小时 64dp、同屏 >4 天收起时间轴、今天列浅底高亮（仅本周）
 package com.lvjian.app.ui
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -23,22 +20,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,7 +37,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lvjian.app.data.PlanEventEntity
 import com.lvjian.app.ui.components.*
 import com.lvjian.app.ui.theme.*
-import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.temporal.ChronoField
 
@@ -69,9 +56,6 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
 
     // 本周一（offset 0 的基准）
     val monday = LocalDate.now().with(ChronoField.DAY_OF_WEEK, 1)
-    val scope = rememberCoroutineScope()
-    // 换周时这一页滑出、下一页从旁边滑入。0 表示停稳。
-    val slide = remember { Animatable(0f) }
     var daysVisible by remember { mutableFloatStateOf(4f) }
     val weekMonday = monday.plusWeeks(weekOffset.toLong())
     val weekDates = (0..6).map { weekMonday.plusDays(it.toLong()) }
@@ -104,9 +88,17 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
     ) {
         // 页头：标题 + 分享 + 齿轮 + 粉 blob
         PageHeader(
-            if (weekOffset == 0) "本周安排" else "第 ${weekOffset + 1} 周安排",
+            if (weekOffset == 0) "本周" else "第${weekOffset + 1}周",
             blobColor = LvHighlight,
             onSettings = onSettings,
+            titleActions = {
+                IconButton(onClick = { weekOffset-- }, enabled = weekOffset > 0) {
+                    Icon(LvIcons.Back, contentDescription = "上一周", modifier = Modifier.size(20.dp))
+                }
+                IconButton(onClick = { weekOffset++ }, enabled = weekOffset < MAX_WEEK_OFFSET) {
+                    Icon(LvIcons.Right, contentDescription = "下一周", modifier = Modifier.size(20.dp))
+                }
+            },
             actions = {
                 IconButton(onClick = { showShare = true }) {
                     Icon(LvIcons.Share, contentDescription = "分享计划表", tint = LvInk, modifier = Modifier.size(22.dp))
@@ -114,7 +106,7 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
             }
         )
 
-        // 左右滑先在本周里看前后几天。滑到最左或最右，再继续滑才换周。
+        // 横向滚动只查看本周各天；换周只通过标题旁的箭头。
         Box(Modifier.weight(1f).clip(RoundedCornerShape(0.dp))) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val availW = maxWidth
@@ -122,40 +114,8 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
                 val dayW = (availW - gutterW) / daysVisible
                 val density = LocalDensity.current
                 val lineColor = LvLine
-                val pagePx = with(density) { availW.toPx() }
-                val weekPx = with(density) { (dayW * 7).toPx() }
-                val viewPx = with(density) { (availW - gutterW).toPx() }
                 val hScroll = rememberScrollState()
                 val timeScroll = rememberScrollState()
-                val edge = remember {
-                    object : NestedScrollConnection {
-                        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                            val dx = available.x
-                            if (kotlin.math.abs(dx) < 0.5f) return Offset.Zero
-                            val nextOk = dx < 0 && weekOffset < MAX_WEEK_OFFSET
-                            val prevOk = dx > 0 && weekOffset > 0
-                            if (!nextOk && !prevOk) return Offset.Zero
-                            scope.launch { slide.snapTo((slide.value + dx).coerceIn(-pagePx, pagePx)) }
-                            return Offset(dx, 0f)
-                        }
-                        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                            val fast = kotlin.math.abs(available.x) > 900f
-                            val go = kotlin.math.abs(slide.value) > pagePx * 0.16f ||
-                                (fast && kotlin.math.abs(slide.value) > 24f)
-                            val dir = when {
-                                slide.value < 0 || (fast && available.x < 0) -> 1
-                                else -> -1
-                            }
-                            val next = (weekOffset + dir).coerceIn(0, MAX_WEEK_OFFSET)
-                            if (go && next != weekOffset && ((dir > 0 && slide.value <= 0) || (dir < 0 && slide.value >= 0))) {
-                                slide.animateTo(if (dir > 0) -pagePx else pagePx, tween(220))
-                                weekOffset = next
-                                slide.snapTo(0f)
-                            } else slide.animateTo(0f, tween(180))
-                            return Velocity.Zero
-                        }
-                    }
-                }
                 Row(Modifier.fillMaxSize().verticalScroll(timeScroll)) {
                     Column(Modifier.width(gutterW)) {
                         Spacer(Modifier.height(52.dp))
@@ -165,7 +125,7 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
                     }
                     Box(Modifier.weight(1f)) {
                     Box(
-                    Modifier.fillMaxSize().nestedScroll(edge).pointerInput(Unit) {
+                    Modifier.fillMaxSize().pointerInput(Unit) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
                             do {
@@ -179,15 +139,13 @@ fun WeekScreen(vm: MainViewModel, onSettings: () -> Unit) {
                         }
                     }
                 ) {
-                    Row(Modifier.horizontalScroll(hScroll).graphicsLayer { translationX = slide.value }) {
-                        WeekPage(weekOffset, events, monday, gutterW, dayW, density, lineColor, false, onBlank = { day, start, epoch ->
+                    Row(Modifier.horizontalScroll(hScroll)) {
+                        WeekPage(weekOffset, events, monday, gutterW, dayW, density, lineColor, onBlank = { day, start, epoch ->
                             draft = EventDraft(epochDay = epoch, startMin = start, endMin = minOf(start + 60, 24 * 60))
                         }, onBlock = { ev ->
                             draft = EventDraft(id = ev.id, epochDay = ev.epochDay, startMin = ev.startMin, endMin = ev.endMin, title = ev.title, place = ev.place, color = ev.color, repeatWeekly = ev.repeatWeekly)
                         })
                     }
-                    if (slide.value < -1f) WeekPage(weekOffset + 1, events, monday, gutterW, dayW, density, lineColor, true, Modifier.graphicsLayer { translationX = pagePx + slide.value })
-                    if (slide.value > 1f) WeekPage(weekOffset - 1, events, monday, gutterW, dayW, density, lineColor, true, Modifier.graphicsLayer { translationX = slide.value - pagePx })
                     }
                     }
                 }
@@ -252,7 +210,6 @@ private fun WeekPage(
     dayW: Dp,
     density: androidx.compose.ui.unit.Density,
     lineColor: Color,
-    paging: Boolean,
     modifier: Modifier = Modifier,
     onBlank: ((Int, Int, Long) -> Unit)? = null,
     onBlock: ((PlanEventEntity) -> Unit)? = null,

@@ -3,6 +3,13 @@
 // 视觉对齐 web-preview/preview.css v4「IP 趣味」皮肤（含深色翻转）
 package com.lvjian.app.ui.components
 
+import android.view.WindowManager
+import android.view.Window
+import android.view.ViewTreeObserver
+import android.graphics.Rect
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
@@ -43,6 +50,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -241,20 +250,24 @@ fun PageHeader(
     title: String,
     blobColor: Color,
     onSettings: () -> Unit,
-    actions: (@Composable RowScope.() -> Unit)? = null
+    actions: (@Composable RowScope.() -> Unit)? = null,
+    titleActions: (@Composable RowScope.() -> Unit)? = null
 ) {
     val sayText by BlobState.sayText.collectAsState()
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineSmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            titleActions?.invoke(this)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             actions?.invoke(this)
             IconButton(onClick = onSettings) {
@@ -580,7 +593,7 @@ data class MainViewModelToast(
 /**
  * 底部弹层：遮罩 + 白卡片从底部滑上来（0.3s，对齐预览 .sheet 的 sheet-in）。
  * 不用系统 ModalBottomSheet：那一层在这台手机上要等将近 4 秒才开始动。
- * 表单自己滚，操作区留在卡片底部。
+ * 表单自己滚，操作区留在卡片底部，并避开系统栏和软键盘。
  */
 @Composable
 fun LvSheet(
@@ -606,7 +619,14 @@ fun LvSheet(
         onDismissRequest = requestClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Box(Modifier.fillMaxSize()) {
+        val dialogWindow = (LocalView.current.parent as DialogWindowProvider).window
+        LaunchedEffect(dialogWindow) {
+            // 系统主题默认为 adjustPan，底部操作区不会随键盘抬起。
+            // 交由窗口缩小可用高度，滚动表单让出空间，保留操作区。
+            dialogWindow.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
+        val dialogPadding = rememberDialogPadding(dialogWindow)
+        Box(Modifier.fillMaxSize().padding(dialogPadding)) {
             AnimatedVisibility(
                 visible = visibility.targetState,
                 enter = fadeIn(tween(200)),
@@ -635,8 +655,6 @@ fun LvSheet(
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(topStart = 27.dp, topEnd = 27.dp))
                         .background(LvElev)
-                        .navigationBarsPadding()
-                        .padding(bottom = 48.dp)
                 ) {
                     Box(
                         Modifier
@@ -689,6 +707,52 @@ fun LvSheet(
                 }
             }
         }
+    }
+}
+
+/** Dialog 的系统栏/键盘尺寸直接从窗口读取，避免厂商窗口未向 Compose 转发 IME insets。 */
+@Composable
+private fun rememberDialogPadding(window: Window): PaddingValues {
+    val density = LocalDensity.current
+    var insets by remember(window) { mutableStateOf(Insets.NONE) }
+    DisposableEffect(window) {
+        val decor = window.decorView
+        val visibleFrame = Rect()
+        val location = IntArray(2)
+        fun update(current: WindowInsetsCompat? = ViewCompat.getRootWindowInsets(decor)) {
+            val bars = current?.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                ?: Insets.NONE
+            val ime = current?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+            decor.getWindowVisibleDisplayFrame(visibleFrame)
+            decor.getLocationOnScreen(location)
+            // 厂商可能把 systemBars 和 IME inset 都报告为 0；可视区域仍包含实际遮挡。
+            val frameInsets = if (!visibleFrame.isEmpty) Insets.of(
+                (visibleFrame.left - location[0]).coerceIn(0, decor.width),
+                (visibleFrame.top - location[1]).coerceIn(0, decor.height),
+                (location[0] + decor.width - visibleFrame.right).coerceIn(0, decor.width),
+                (location[1] + decor.height - visibleFrame.bottom).coerceIn(0, decor.height)
+            ) else Insets.NONE
+            insets = Insets.of(
+                maxOf(bars.left, frameInsets.left),
+                maxOf(bars.top, frameInsets.top),
+                maxOf(bars.right, frameInsets.right),
+                maxOf(bars.bottom, ime, frameInsets.bottom)
+            )
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(decor) { _, current ->
+            update(current)
+            current
+        }
+        val listener = ViewTreeObserver.OnGlobalLayoutListener { update() }
+        decor.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        ViewCompat.requestApplyInsets(decor)
+        onDispose {
+            if (decor.viewTreeObserver.isAlive) decor.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+            ViewCompat.setOnApplyWindowInsetsListener(decor, null)
+        }
+    }
+    return with(density) {
+        PaddingValues(start = insets.left.toDp(), top = insets.top.toDp(), end = insets.right.toDp(), bottom = insets.bottom.toDp())
     }
 }
 

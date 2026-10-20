@@ -22,8 +22,13 @@
 !/app/src/
 /tools/*
 !/tools/sync-product-manual.cjs
+!/tools/verify-rule-save.ps1
+!/tools/run-unit-tests.ps1
+!/tools/notification-probe/
 /docs/*
 !/docs/product-manual.md
+!/docs/verification-0.10.8.md
+!/docs/verification-0.10.9.md
 
 # Private credentials, local settings, caches and generated files.
 **/build/

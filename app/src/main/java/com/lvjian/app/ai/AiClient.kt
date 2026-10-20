@@ -200,35 +200,43 @@ class AiClient(private val appContext: android.content.Context? = null) {
 
     /**
      * 批量判定：一组规则 + 多条编号消息，一次调用全判完。
+     * 判定和摘要同一次调用产出，所以批量整理后的清单也有摘要，不再回落成原文首行。
      * @param rulesBlock 规则清单文本（由 BatchAiFilter 拼装）
      * @param messagesBlock 编号消息清单文本（[i] 群 | 发送人：正文）
-     * @return i → (filter, ruleName)；解析失败的编号不在 map 里，由调用方兜底
+     * @return i → 判定；解析失败的编号不在 map 里，由调用方兜底
      */
-    suspend fun judgeBatch(config: AiConfig, rulesBlock: String, messagesBlock: String): Map<Int, Pair<Boolean, String?>> =
+    suspend fun judgeBatch(config: AiConfig, rulesBlock: String, messagesBlock: String): Map<Int, BatchVerdict> =
         withContext(Dispatchers.IO) {
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "system")
-                    put(
-                        "content",
-                        "你是群消息过滤器。下面给你若干条过滤规则和若干条编号消息。" +
-                            "逐条判断每条消息是否命中任一规则（命中即应过滤）。" +
-                            "只输出 JSON 数组：[{\"i\":1,\"filter\":true,\"rule\":\"规则名\"}," +
-                            "{\"i\":2,\"filter\":false,\"rule\":null}]，i 为消息编号，不要输出任何其他内容。"
-                    )
+                    put("content", batchSystemPrompt())
                 })
                 put(JSONObject().apply {
                     put("role", "user")
-                    put("content", "过滤规则：\n$rulesBlock\n消息列表：\n$messagesBlock")
+                    put("content", "用户的整理规则：\n$rulesBlock\n消息列表：\n$messagesBlock")
                 })
             }
             val content = chatCompletions(config, messages)
             parseBatchVerdicts(content)
         }
 
+    /** 批量判定的 system 提示：判定准则 + 输出格式 + 摘要要求 */
+    private fun batchSystemPrompt(): String = buildString {
+        append("你是滤见的消息整理助手。按下面的判定准则和用户的整理规则，")
+        append("逐条判断每条消息应该丢弃还是保留，并给保留的消息写一句话摘要。\n\n")
+        append(com.lvjian.app.rules.TriageRules.FALLBACK).append("\n\n")
+        append("输出要求：每条消息都要给结论，不许漏。只输出 JSON 数组，不要任何其他内容：")
+        append("""[{"i":1,"filter":true,"rule":"命中的规则名或null","summary":""},""")
+        append("""{"i":2,"filter":false,"rule":null,"summary":"一句话摘要"}]""")
+        append("\ni 是消息编号；filter=true 表示丢弃；rule 只在确实命中某条规则时填规则名，否则 null；")
+        append("summary 只给保留的消息写：说清是什么事、要做什么、什么时候，30 字内；丢弃的消息 summary 给空字符串。")
+    }
+
     /**
      * 一条消息一次调用：按规则判定，同时写摘要和加入计划预填。
      * 过滤失败时调用方保留消息；摘要失败时列表继续显示原文。
+     * 判定准则来自 TriageRules.PATTERN，与批量整理共用同一份，别在这里另写一套。
      */
     suspend fun judgeAndBrief(
         config: AiConfig,
@@ -241,8 +249,9 @@ class AiClient(private val appContext: android.content.Context? = null) {
                 put("role", "system")
                 put(
                     "content",
-                    "你是滤见的消息助手。根据规则判断这条消息，并写出摘要和计划预填。" +
-                        "今天是 $today。" +
+                    "你是滤见的消息助手。按下面的判定准则和用户规则看这条消息，" +
+                        "给出丢弃还是保留的结论、一句话摘要和加入计划的预填。今天是 $today。\n\n" +
+                        com.lvjian.app.rules.TriageRules.FALLBACK + "\n\n" +
                         "只输出一个 JSON 对象，不要输出其他内容：" +
                         "{\"filter\":true或false,\"rule\":\"命中的规则名或null\"," +
                         "\"summary\":\"一句话，不超过30字\"," +
@@ -251,10 +260,9 @@ class AiClient(private val appContext: android.content.Context? = null) {
                         "\"date\":\"yyyy-MM-dd，没有明确日期就空字符串\"," +
                         "\"start\":\"HH:mm，没有明确时间就空字符串\"," +
                         "\"end\":\"HH:mm，没有就空字符串\"}。" +
+                        "summary 给清单列表看：说清是什么事、要做什么、什么时候；filter 为 true 时可以给空字符串。" +
                         "保留规则命中时 filter 必须是 false。没有命中任何规则时 filter 是 false、rule 是 null。" +
-                        "@所有人、地点或时间变更、要求确认、截止、提交、问卷、考核、约饭，filter 必须是 false。" +
-                        "验证码、账号安全播报、与工作无关的闲聊、表情包刷屏，filter 为 true，进已过滤。" +
-                        "约饭不是闲聊，不要过滤。拿不准时 filter 是 false。"
+                        "拿不准时 filter 是 false。"
                 )
             })
             put(JSONObject().apply {
@@ -264,6 +272,13 @@ class AiClient(private val appContext: android.content.Context? = null) {
         }
         parseMessageResult(chatCompletions(config, messages))
     }
+
+    /** 批量判定的一条结论。summary 只对保留的消息有意义，丢弃的给空串。 */
+    data class BatchVerdict(
+        val filter: Boolean,
+        val ruleName: String?,
+        val summary: String
+    )
 
     data class MessageAiResult(
         val filter: Boolean,
@@ -370,8 +385,9 @@ class AiClient(private val appContext: android.content.Context? = null) {
     /**
      * 宽松解析批量输出：剥 markdown 代码块 → JSONArray → 按 "i" 建映射。
      * 模型偶尔夹带文字时，退化为截取第一个 '[' 到最后一个 ']' 之间的内容再试一次。
+     * summary 缺失或超长都按空/截断处理，不影响判定结果。
      */
-    private fun parseBatchVerdicts(content: String): Map<Int, Pair<Boolean, String?>> {
+    private fun parseBatchVerdicts(content: String): Map<Int, BatchVerdict> {
         val cleaned = content.trim()
             .removePrefix("```json").removePrefix("```")
             .removeSuffix("```")
@@ -385,14 +401,16 @@ class AiClient(private val appContext: android.content.Context? = null) {
             if (s >= 0 && e2 > s) cleaned.substring(s, e2 + 1) else throw AiException("批量判定输出无法解析")
         }
         val arr = JSONArray(arrayText)
-        val out = HashMap<Int, Pair<Boolean, String?>>(arr.length())
+        val out = HashMap<Int, BatchVerdict>(arr.length())
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val idx = o.optInt("i", -1)
             if (idx < 0) continue
             val filter = o.optBoolean("filter", false)
             val rule = o.optString("rule", "").takeIf { filter && it.isNotBlank() && it != "null" }
-            out[idx] = filter to rule
+            // 丢弃的条目不写摘要（进已过滤不需要）；保留的取模型给的摘要
+            val summary = if (filter) "" else o.optString("summary", "").trim().take(40)
+            out[idx] = BatchVerdict(filter, rule, summary)
         }
         return out
     }

@@ -146,14 +146,13 @@ fun MainScaffold(vm: MainViewModel) {
 
     // 通知访问状态：进入应用、从系统设置返回（ON_RESUME）时都重新读取，不只在进子页时刷新
     var notifAccess by remember { mutableStateOf(SystemHelper.hasNotificationAccess(context)) }
-    var listenerBound by remember { mutableStateOf(SystemHelper.isNotificationListenerBound(context)) }
+    val listenerBound by com.lvjian.app.notify.LvJianListenerService.connected.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notifAccess = SystemHelper.hasNotificationAccess(context)
-                listenerBound = SystemHelper.isNotificationListenerBound(context)
-                if (notifAccess && !listenerBound) SystemHelper.rebindNotificationListener(context)
+                if (notifAccess && !SystemHelper.isNotificationListenerBound(context)) SystemHelper.rebindNotificationListener(context)
                 if (!SystemHelper.isIgnoringBatteryOptimizations(context)) {
                     SystemHelper.requestIgnoreBatteryOptimizations(context)
                 }
@@ -300,13 +299,16 @@ fun MainScaffold(vm: MainViewModel) {
                             if (!notifAccess)
                                 "通知访问关着，新通知不会进滤见。已有的消息和设置都还在。"
                             else
-                                "权限开着，但系统没有把通知交给滤见。新通知不会进来，直到重新打开通知访问。",
+                                "通知访问已开启，正在尝试恢复连接。仍未恢复时，点击重新连接。",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Spacer(Modifier.height(10.dp))
                         LvPrimaryButton(
-                            "去开启",
-                            onClick = { SystemHelper.openNotificationAccessSettings(context) },
+                            if (notifAccess) "重新连接" else "去开启",
+                            onClick = {
+                                if (notifAccess) SystemHelper.rebindNotificationListener(context)
+                                else SystemHelper.openNotificationAccessSettings(context)
+                            },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -342,6 +344,7 @@ fun MainScaffold(vm: MainViewModel) {
                         Tab.APPS -> AppsScreen(
                             vm,
                             notifAccess = notifAccess,
+                            listenerBound = listenerBound,
                             onSettings = { goSub(SubPage.Settings) },
                             onOpenConvs = { pkg -> goSub(SubPage.AppConvs(pkg)) },
                             onOpenMarketing = { goSub(SubPage.MarketingApps) }
