@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -44,6 +45,8 @@ import com.lvjian.app.data.MsgStatus
 import com.lvjian.app.ui.components.*
 import com.lvjian.app.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlin.coroutines.coroutineContext
 import com.lvjian.app.util.AppNames
 import com.lvjian.app.util.PlanGuesser
 import kotlin.math.abs
@@ -63,6 +66,22 @@ private fun rollingCount(target: Int): Int {
         }
     }
     return anim.value.roundToInt()
+}
+
+/** 每轮从0开始，即使UI第一次收到的就是整批结果，也逐个展示已保存的数字。 */
+@Composable
+private fun savedProgressCount(target: Int, runId: Long?): Int {
+    var displayed by remember(runId) { mutableIntStateOf(0) }
+    LaunchedEffect(target, runId) {
+        animateSavedCount(displayed, target,
+            motionScale = coroutineContext[MotionDurationScale]?.scaleFactor ?: 1f,
+            pause = { millis ->
+                delay(millis)
+                // 等一个实际屏幕帧，不能让所有数字在同一帧内更新后被合并。
+                withFrameNanos { }
+            }) { displayed = it }
+    }
+    return displayed
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -444,30 +463,44 @@ fun DoneListScreen(vm: MainViewModel, onBack: () -> Unit) {
 private fun OrganizeCard(vm: MainViewModel, pendingCount: Int, onOpenRules: () -> Unit) {
     val organizing by vm.organizing.collectAsStateWithLifecycle()
     val progress by vm.organizeProgress.collectAsStateWithLifecycle()
-    val displayedDone = key(progress?.runId) { rollingCount(progress?.done ?: 0) }
+    OrganizeCardContent(pendingCount, organizing != null, progress, { vm.organizeBatch() }, onOpenRules)
+}
+
+@Composable
+internal fun OrganizeCardContent(
+    pendingCount: Int,
+    organizing: Boolean,
+    progress: MainViewModel.OrganizeProgress?,
+    onOrganize: () -> Unit,
+    onOpenRules: () -> Unit
+) {
+    val displayedDone = savedProgressCount(progress?.done ?: 0, progress?.runId)
+    val counting = progress != null && displayedDone != progress!!.done
 
     LvCard(Modifier.fillMaxWidth()) {
         Text("未整理 · $pendingCount 条", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(10.dp))
         LvPrimaryButton(
             text = when {
-                organizing == null -> "一键整理"
-                progress == null -> "准备整理…"
-                else -> "已整理 $displayedDone/${progress!!.total} 条"
+                progress != null && (organizing || counting) -> "已整理 $displayedDone/${progress!!.total} 条"
+                organizing -> "准备整理…"
+                else -> "一键整理"
             },
-            onClick = { if (organizing == null) vm.organizeBatch() },
-            modifier = Modifier.fillMaxWidth()
+            onClick = onOrganize,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !organizing && !counting
         )
-        if (organizing != null || progress != null) {
+        if (organizing || progress != null) {
             Spacer(Modifier.height(8.dp))
             Text(
                 when {
-                    organizing != null -> "正在分析消息，请稍候…"
+                    organizing -> "正在分析消息，请稍候…"
+                    counting -> "已整理 $displayedDone/${progress!!.total} 条"
                     progress!!.done < progress!!.total ->
                         "已整理 $displayedDone/${progress!!.total} 条，${progress!!.total - progress!!.done} 条未成功，可重试"
                     else -> "已整理 $displayedDone/${progress!!.total} 条"
                 },
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum")
             )
         }
         Spacer(Modifier.height(8.dp))

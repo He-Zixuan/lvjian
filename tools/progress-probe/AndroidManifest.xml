@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application android:name="android.app.Application" android:label="Progress check"
+        tools:replace="android:name,android:label">
+        <activity android:name="com.lvjian.app.ui.ProgressProbeActivity" android:exported="true" />
+    </application>
+</manifest>

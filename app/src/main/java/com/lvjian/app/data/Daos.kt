@@ -25,6 +25,18 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE id = :id")
     suspend fun byId(id: Long): MessageEntity?
 
+    @Query("SELECT * FROM messages WHERE mergedIntoId != 0 ORDER BY timestamp ASC, id ASC")
+    fun mergedSourcesFlow(): Flow<List<MessageEntity>>
+
+    @Query("SELECT * FROM messages WHERE mergedIntoId = :id ORDER BY timestamp ASC, id ASC")
+    suspend fun mergedSources(id: Long): List<MessageEntity>
+
+    @Query("SELECT * FROM messages WHERE appPackage = :app AND groupName = :group AND filtered = 0 AND status = 0 AND aiState != 4 AND mergedIntoId = 0 ORDER BY timestamp DESC LIMIT 30")
+    suspend fun conversationContext(app: String, group: String): List<MessageEntity>
+
+    @Query("UPDATE messages SET mergedIntoId = :target, aiState = 2 WHERE id IN (:ids)")
+    suspend fun markMerged(ids: List<Long>, target: Long)
+
     @Query("UPDATE messages SET status = :status WHERE id = :id")
     suspend fun setStatus(id: Long, status: Int)
 
@@ -52,19 +64,19 @@ interface MessageDao {
     )
 
     /** 主清单：未过滤 + 待处理，新的在前；未整理（aiState=4）单独成段，不进待处理 */
-    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState != 4 ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState != 4 AND mergedIntoId = 0 ORDER BY timestamp DESC")
     fun pendingFlow(): Flow<List<MessageEntity>>
 
     /** 未整理：批量模式攒下的待 AI 判定条目，新的在前 */
-    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4 ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4 AND mergedIntoId = 0 ORDER BY timestamp DESC")
     fun pendingBatchFlow(): Flow<List<MessageEntity>>
 
     /** 未整理计数（分段角标/操作卡） */
-    @Query("SELECT COUNT(*) FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4")
+    @Query("SELECT COUNT(*) FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4 AND mergedIntoId = 0")
     fun pendingBatchCountFlow(): Flow<Int>
 
     /** 一键整理取数：全部未整理，旧的在前（按时间序喂给模型更自然） */
-    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4 ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE filtered = 0 AND status = 0 AND aiState = 4 AND mergedIntoId = 0 ORDER BY timestamp ASC")
     suspend fun pendingBatchAll(): List<MessageEntity>
 
     /** 只更新 AI 状态（批量判定中 QUEUED 等） */
@@ -72,14 +84,14 @@ interface MessageDao {
     suspend fun setAiState(id: Long, aiState: Int)
 
     /** 已划去（完成+忽略），新的在前 */
-    @Query("SELECT * FROM messages WHERE filtered = 0 AND status != 0 ORDER BY timestamp DESC LIMIT 500")
+    @Query("SELECT * FROM messages WHERE filtered = 0 AND status != 0 AND mergedIntoId = 0 ORDER BY timestamp DESC LIMIT 500")
     fun doneFlow(): Flow<List<MessageEntity>>
 
     /** 已过滤条目（可复查） */
-    @Query("SELECT * FROM messages WHERE filtered = 1 ORDER BY timestamp DESC LIMIT 500")
+    @Query("SELECT * FROM messages WHERE filtered = 1 AND mergedIntoId = 0 ORDER BY timestamp DESC LIMIT 500")
     fun filteredFlow(): Flow<List<MessageEntity>>
 
-    @Query("SELECT COUNT(*) FROM messages WHERE filtered = 1")
+    @Query("SELECT COUNT(*) FROM messages WHERE filtered = 1 AND mergedIntoId = 0")
     fun filteredCountFlow(): Flow<Int>
 
     /** 误判恢复：把条目拉回主清单 */
@@ -87,19 +99,19 @@ interface MessageDao {
     suspend fun unfilter(id: Long)
 
     // ---- 清空分段（已过滤/已划去）与撤销 ----
-    @Query("SELECT * FROM messages WHERE filtered = 1 ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE filtered = 1 OR mergedIntoId IN (SELECT id FROM messages WHERE filtered = 1) ORDER BY timestamp DESC")
     suspend fun allFiltered(): List<MessageEntity>
 
-    @Query("SELECT * FROM messages WHERE filtered = 0 AND status != 0 ORDER BY timestamp DESC")
+    @Query("SELECT * FROM messages WHERE (filtered = 0 AND status != 0 AND mergedIntoId = 0) OR mergedIntoId IN (SELECT id FROM messages WHERE filtered = 0 AND status != 0 AND mergedIntoId = 0) ORDER BY timestamp DESC")
     suspend fun allDone(): List<MessageEntity>
 
-    @Query("DELETE FROM messages WHERE filtered = 1")
+    @Query("DELETE FROM messages WHERE filtered = 1 OR mergedIntoId IN (SELECT id FROM messages WHERE filtered = 1)")
     suspend fun clearFiltered()
 
-    @Query("DELETE FROM messages WHERE filtered = 0 AND status != 0")
+    @Query("DELETE FROM messages WHERE (filtered = 0 AND status != 0 AND mergedIntoId = 0) OR mergedIntoId IN (SELECT id FROM messages WHERE filtered = 0 AND status != 0 AND mergedIntoId = 0)")
     suspend fun clearDone()
 
-    @Query("DELETE FROM messages WHERE id = :id")
+    @Query("DELETE FROM messages WHERE id = :id OR mergedIntoId = :id")
     suspend fun deleteById(id: Long)
 }
 

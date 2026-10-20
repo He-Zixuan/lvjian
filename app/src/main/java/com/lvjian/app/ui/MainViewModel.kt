@@ -97,6 +97,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     showToast("先在「设置 → AI」里配好接口再整理")
                 } else {
                     showToast("整理完成：滤掉 ${result.filtered} 条，保留 ${result.kept} 条" +
+                        (if (result.merged > 0) "，合并 ${result.merged} 条重复或补充" else "") +
                         (if (result.failed > 0) "，失败 ${result.failed} 条（留在未整理可重试）" else ""))
                 }
             } catch (e: Exception) {
@@ -219,8 +220,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val removed = repo.clearSegment(filteredSeg)
             val name = if (filteredSeg) "已过滤" else "已划去"
             if (removed.isNotEmpty()) {
-                showToast("已清空「$name」${removed.size} 条", "撤销") {
-                    viewModelScope.launch { removed.forEach { repo.reinsertMessage(it) } }
+                showToast("已清空「$name」${removed.count { it.mergedIntoId == 0L }} 条", "撤销") {
+                    viewModelScope.launch { repo.reinsertMessages(removed) }
                 }
             }
         }

@@ -11,6 +11,8 @@ plugins {
 // 本机签名凭据不纳入版本控制；没有配置时仍可构建 debug 或未签名 release。
 val signingProperties = Properties()
 val signingPropertiesFile = rootProject.file("signing.properties")
+// 独立真机进度演示：不使用正式包的数据，也不调用 AI。
+val progressProbe = providers.gradleProperty("progressProbe").orNull == "true"
 if (signingPropertiesFile.isFile) {
     signingPropertiesFile.inputStream().use { signingProperties.load(it) }
 }
@@ -21,11 +23,11 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.lvjian.app"
+        applicationId = if (progressProbe) "com.lvjian.progresscheck" else "com.lvjian.app"
         minSdk = 26          // 通知渠道/搁置等 API 从 26 起完整；S50 是 Android 16，远高于此
         targetSdk = 35
-        versionCode = 56
-        versionName = "0.10.9"   // 一键整理实时条数进度；当前周标题改为本周
+        versionCode = 58
+        versionName = "0.10.11"  // 已整理n/N逐个显示，快速完成也播完计数
     }
 
     // 从本机配置读取签名，不在公开源码中保存密码或密钥库。
@@ -56,6 +58,12 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures {
         compose = true
+    }
+    if (progressProbe) {
+        sourceSets.getByName("debug") {
+            manifest.srcFile(rootProject.file("tools/progress-probe/AndroidManifest.xml"))
+            java.srcDir(rootProject.file("tools/progress-probe"))
+        }
     }
 }
 

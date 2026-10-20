@@ -51,7 +51,9 @@ data class MessageEntity(
     /** 加入计划的预填：开始分钟。-1 表示没有。 */
     val planStartMin: Int = -1,
     /** 加入计划的预填：结束分钟。-1 表示没有。 */
-    val planEndMin: Int = -1
+    val planEndMin: Int = -1,
+    /** 合并后指向代表事项；原文仍在本行，0 表示独立清单项。 */
+    val mergedIntoId: Long = 0
 ) {
     companion object {
         /** 手动添加（清单页 +）条目的虚拟包名 */

@@ -57,6 +57,173 @@ class BatchAiFilterTest {
     }
 
     @Test
+    fun chunkBoundaryCarriesContextAndCanUpdateThePreviousChunk() = runBlocking {
+        val server = MockWebServer()
+        val first = JSONArray()
+        (1..40).forEach { first.put(JSONObject().put("i", it).put("filter", false).put("summary", "事项$it")) }
+        server.enqueue(responseFor(first.toString()))
+        server.enqueue(responseFor("""[{"i":1,"filter":false,"merge_into":2,"summary":"补充"},
+            {"i":2,"filter":false,"summary":"问卷明天17点截止"}]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            var previous: MessageEntity? = null
+            val result = engine.run((1L..41L).map { message(it, if (it == 41L) "问卷明天17点截止" else "事项$it") },
+                listOf(builtinRule), { _, _ -> }, contextFor = { listOfNotNull(previous) },
+                saveMerged = { root, sources, _ ->
+                    assertEquals(40L, root.id)
+                    assertEquals(listOf(41L), sources.map { it.id })
+                    true
+                }) { id, _, _, _, summary -> if (id == 40L) previous = message(id, "事项40").copy(summary = summary) }
+            assertEquals(40, result.kept)
+            assertEquals(1, result.merged)
+            assertEquals(2, result.calls)
+            val firstPrompt = JSONObject(server.takeRequest().body.readUtf8()).getJSONArray("messages").getJSONObject(1).getString("content")
+            assertTrue(firstPrompt.contains("只读上下文"))
+            assertTrue(firstPrompt.contains("问卷明天17点截止"))
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun changedMergeTargetLeavesNewSourcesForRetry() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(responseFor("""[{"i":1,"filter":false,"summary":"问卷"},
+            {"i":2,"filter":false,"summary":"补充","merge_into":1}]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            val result = engine.run(listOf(message(1, "问卷"), message(2, "明天截止")), listOf(builtinRule), { _, _ -> },
+                saveMerged = { _, _, _ -> false }) { _, _, _, _, _ -> throw AssertionError("不能部分消费失败的合并组") }
+            assertEquals(2, result.failed)
+            assertEquals(0, result.kept)
+            assertEquals(0, result.merged)
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun repeatedNoticesAndDeadlineFollowupBecomeOneItemWithAllSources() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(responseFor("""[
+            {"i":1,"filter":false,"summary":"今天17点前填培养方案问卷","title":"培养方案问卷","date":"2026-10-20","start":"17:00"},
+            {"i":2,"filter":false,"merge_into":1,"summary":"重复通知"},
+            {"i":3,"filter":false,"merge_into":1,"summary":"截止补充"}
+        ]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            val standalone = mutableListOf<Long>()
+            val saved = mutableListOf<Pair<Long, List<Long>>>()
+            val progress = mutableListOf<Int>()
+            val result = engine.run(listOf(message(1, "培养方案问卷请填写"),
+                message(2, "转发：培养方案问卷请填写"), message(3, "上面的问卷今天17点截止")),
+                listOf(builtinRule), { done, _ -> progress += done },
+                saveMerged = { root, members, verdict ->
+                    saved += root.id to members.map { it.id }
+                    assertEquals("今天17点前填培养方案问卷", verdict.summary)
+                    assertEquals("2026-10-20", verdict.date)
+                    assertEquals("17:00", verdict.start)
+                    true
+                }
+            ) { id, _, _, _, _ -> standalone += id }
+            assertEquals(listOf(1L to listOf(2L, 3L)), saved)
+            assertTrue(standalone.isEmpty())
+            assertEquals(1, result.kept)
+            assertEquals(2, result.merged)
+            assertEquals(listOf(0, 1, 2, 3), progress)
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun laterBatchUpdatesExistingItemAndNeverUsesAnotherConversation() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(responseFor("""[{"i":1,"filter":false,"merge_into":2,"summary":"催办"},
+            {"i":2,"filter":false,"summary":"培养方案问卷改为明天17点截止"}]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            val result = engine.run(listOf(message(100, "上面的问卷改为明天截止")), listOf(builtinRule), { _, _ -> },
+                contextFor = { listOf(message(1, "培养方案问卷今天截止"),
+                    message(2, "其他群私有上下文").copy(groupName = "别的群"),
+                    message(3, "另一应用私有上下文").copy(appPackage = "com.tencent.mobileqq")) },
+                saveMerged = { root, members, _ ->
+                    assertEquals(1L, root.id)
+                    assertEquals(listOf(100L), members.map { it.id })
+                    true
+                }
+            ) { _, _, _, _, _ -> throw AssertionError("补充应更新原项") }
+            assertEquals(0, result.kept)
+            assertEquals(1, result.merged)
+            val prompt = JSONObject(server.takeRequest().body.readUtf8()).getJSONArray("messages").getJSONObject(1).getString("content")
+            assertFalse(prompt.contains("其他群私有上下文"))
+            assertFalse(prompt.contains("另一应用私有上下文"))
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun cyclicUnknownOrMissingMergeTargetsDoNotHideMessages() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(responseFor("""[
+            {"i":1,"filter":false,"merge_into":2,"summary":"原文1"},
+            {"i":2,"filter":false,"merge_into":1,"summary":"原文2"},
+            {"i":3,"filter":false,"merge_into":99,"summary":"原文3"},
+            {"i":4,"filter":false,"merge_into":5,"summary":"原文4"}
+        ]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            val saved = mutableListOf<Long>()
+            val result = engine.run((1L..5).map { message(it, "通知$it") }, listOf(builtinRule), { _, _ -> },
+                saveMerged = { _, _, _ -> throw AssertionError("非法合并不能落库") }
+            ) { id, _, _, _, _ -> saved += id }
+            assertEquals(listOf(1L, 2L, 3L, 4L), saved)
+            assertEquals(1, result.failed)
+            assertEquals(0, result.merged)
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun protectedNoticesRemainKeptEvenWhenModelFiltersThem() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(responseFor("""[{"i":1,"filter":true,"rule":"滤掉无用信息"}]"""))
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            val result = engine.run(listOf(message(1, "@所有人：填写问卷")), listOf(builtinRule), { _, _ -> },
+                mustKeep = { true }) { _, filtered, _, _, _ -> assertFalse(filtered) }
+            assertEquals(1, result.kept)
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun eachConversationGetsItsOwnChronologicalBatch() = runBlocking {
+        val server = MockWebServer()
+        val prompts = mutableListOf<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val prompt = JSONObject(request.body.readUtf8()).getJSONArray("messages")
+                    .getJSONObject(1).getString("content")
+                prompts += prompt
+                return responseFor("""[{"i":1,"filter":false,"summary":"通知"},{"i":2,"filter":false,"summary":"补充"}]""")
+            }
+        }
+        server.start()
+        try {
+            val engine = BatchAiFilter(AiClient(), AiConfig("http://127.0.0.1:${server.port}", "test-key", "test-model", true))
+            engine.run(listOf(
+                message(3, "问卷今天17点截止"),
+                message(2, "另一群的奖学金通知").copy(groupName = "年级群"),
+                message(1, "请填写培养方案问卷")
+            ), listOf(builtinRule), { _, _ -> }) { _, _, _, _, _ -> }
+            assertEquals("同规则的不同群也必须分别处理，避免上下文串群", 2, prompts.size)
+            val course = prompts.single { it.contains("请填写培养方案问卷") }
+            assertFalse(course.contains("另一群的奖学金通知"))
+            assertTrue("同群消息应按时间排序", course.indexOf("请填写培养方案问卷") < course.indexOf("问卷今天17点截止"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun batchPromptCarriesTriageRulesAndSummaryOutput() = runBlocking {
         val server = MockWebServer()
         var systemPrompt = ""

@@ -405,7 +405,9 @@ fun LvPrimaryButton(
         ),
         contentPadding = PaddingValues(horizontal = 18.dp, vertical = 13.dp),
         modifier = modifier.heightIn(min = 50.dp).pressScale(interactionSource)
-    ) { Text(text, color = LvOnAccent, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
+    ) { Text(text, color = if (enabled) LvOnAccent else LvMuted,
+        style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"),
+        fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
 }
 
 /** 次按钮：浅填充底（对齐 .secondary-button） */

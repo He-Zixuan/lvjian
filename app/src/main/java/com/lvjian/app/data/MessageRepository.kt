@@ -4,6 +4,7 @@
 package com.lvjian.app.data
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.lvjian.app.ai.AiClient
 import com.lvjian.app.notify.LvJianListenerService
 import com.lvjian.app.notify.NotificationHelper
@@ -16,6 +17,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.lvjian.app.notify.PlanReminderScheduler
@@ -29,6 +33,7 @@ class MessageRepository(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val aiClient = AiClient(context)
+    private val organizeMutex = Mutex()
 
     private val messages get() = db.messageDao()
     private val rules get() = db.ruleDao()
@@ -63,9 +68,14 @@ class MessageRepository(
     }
 
     // ---------- UI 订阅流 ----------
-    fun pendingMessages(): Flow<List<MessageEntity>> = messages.pendingFlow()
-    fun doneMessages(): Flow<List<MessageEntity>> = messages.doneFlow()
-    fun filteredMessages(): Flow<List<MessageEntity>> = messages.filteredFlow()
+    private fun withSources(flow: Flow<List<MessageEntity>>): Flow<List<MessageEntity>> =
+        combine(flow, messages.mergedSourcesFlow()) { roots, sources ->
+            val byRoot = sources.groupBy { it.mergedIntoId }
+            roots.map { MessageSources.forDisplay(it, byRoot[it.id].orEmpty()) }
+        }
+    fun pendingMessages(): Flow<List<MessageEntity>> = withSources(messages.pendingFlow())
+    fun doneMessages(): Flow<List<MessageEntity>> = withSources(messages.doneFlow())
+    fun filteredMessages(): Flow<List<MessageEntity>> = withSources(messages.filteredFlow())
     fun filteredCount(): Flow<Int> = messages.filteredCountFlow()
     fun allRules(): Flow<List<RuleEntity>> = rules.allFlow()
     fun allGroups(): Flow<List<GroupEntity>> = groups.allFlow()
@@ -95,14 +105,19 @@ class MessageRepository(
     // ---------- 清单操作 ----------
     suspend fun setStatus(id: Long, status: Int) = messages.setStatus(id, status)
     suspend fun unfilter(id: Long) = messages.unfilter(id)
-    suspend fun messageById(id: Long) = messages.byId(id)
+    suspend fun messageById(id: Long) = messages.byId(id)?.let {
+        MessageSources.forDisplay(it, messages.mergedSources(id))
+    }
     suspend fun reinsertMessage(msg: MessageEntity) = messages.reinsert(msg)
+    suspend fun reinsertMessages(rows: List<MessageEntity>) = db.withTransaction {
+        rows.forEach { messages.reinsert(it) }
+    }
 
     /** 清空某分段（撤销用：先取出再删，撤销时整批插回） */
-    suspend fun clearSegment(filtered: Boolean): List<MessageEntity> {
+    suspend fun clearSegment(filtered: Boolean): List<MessageEntity> = db.withTransaction {
         val removed = if (filtered) messages.allFiltered() else messages.allDone()
         if (filtered) messages.clearFiltered() else messages.clearDone()
-        return removed
+        removed
     }
 
     /** 手动添加一条到清单（清单页「+」；来源标记为手动） */
@@ -425,13 +440,17 @@ class MessageRepository(
         // 保留命中后留在待处理。过滤命中走上面的去向。
         // 完全未命中、且有适用 AI 规则：实时模式下立刻判定；批量模式进未整理。
         // 摘要和计划预填跟这次判定一起生成，不等用户点「加入计划」。
-        if (verdict == null && !mentionOthers && obviousWork(msg.text)) {
+        val aiRules = enabledRules.filter {
+            RuleEngine.aiRuleApplies(it, msg.appPackage, msg.groupName)
+        }
+        if (filterName == null && !mentionOthers && prefs.currentAiBatchMode() &&
+            (aiRules.isNotEmpty() || verdict?.keep == true || obviousWork(msg.text))) {
+            // 手动模式里连必须保留的工作通知也一起攒上下文，不偷跑逐条摘要。
+            messages.setAiState(id, AIState.PENDING_BATCH)
+        } else if (verdict == null && !mentionOthers && obviousWork(msg.text)) {
             // @所有人、地点变更、截止、考核这类，不交给模型。模型曾把工作通知判成无用信息。
             scope.launch { writeBriefOnly(id, msg) }
         } else if (verdict == null && !mentionOthers) {
-            val aiRules = enabledRules.filter {
-                RuleEngine.aiRuleApplies(it, msg.appPackage, msg.groupName)
-            }
             if (aiRules.isNotEmpty()) {
                 if (prefs.currentAiBatchMode()) {
                     messages.setAiState(id, AIState.PENDING_BATCH)
@@ -459,22 +478,58 @@ class MessageRepository(
      * @param onProgress 进度回调（已成功保存条数/本次总条数），UI 更新操作卡文案
      * @return 整理结果汇总；API 未配置返回 null
      */
-    suspend fun organizePendingBatch(onProgress: (done: Int, total: Int) -> Unit): BatchAiFilter.BatchResult? {
+    suspend fun organizePendingBatch(onProgress: (done: Int, total: Int) -> Unit): BatchAiFilter.BatchResult? = organizeMutex.withLock {
         val config = prefs.currentAiConfig()
-        if (!config.usable) return null
+        if (!config.usable) return@withLock null
         val batch = messages.pendingBatchAll()
-        if (batch.isEmpty()) return BatchAiFilter.BatchResult(0, 0, 0, 0)
+        if (batch.isEmpty()) return@withLock BatchAiFilter.BatchResult(0, 0, 0, 0)
         val enabledRules = rules.enabledRules()
         val keepFiltered = prefs.currentKeepFiltered()
         val engine = BatchAiFilter(aiClient, config)
-        return engine.run(batch, enabledRules, onProgress) { msgId, filtered, ruleName, aiState, summary ->
-            messages.setFilterResult(msgId, filtered, ruleName, aiState)
-            // 批量判定同时产出摘要：保留的条目写进清单，列表不再回落成原文首行
-            if (summary.isNotBlank()) messages.setSummary(msgId, summary)
-            // 「已过滤直接消失」开关关闭时：条目保留在已过滤；开关开（默认进复查）时同理走 filtered 标记
-            // keepFiltered=false 的语义是命中后不留痕，这里沿用：直接删除
-            if (filtered && !keepFiltered) messages.deleteById(msgId)
+        engine.run(batch, enabledRules, onProgress,
+            mustKeep = { msg ->
+                obviousWork(msg.text) || RuleEngine.matchLocal(enabledRules, msg.appPackage,
+                    msg.groupName, msg.sender, msg.text)?.keep == true
+            },
+            contextFor = { msg ->
+                messages.conversationContext(msg.appPackage, msg.groupName).map {
+                    MessageSources.forDisplay(it, messages.mergedSources(it.id))
+                }
+            },
+            saveMerged = { root, members, verdict ->
+                db.withTransaction {
+                    val current = messages.byId(root.id)
+                    val originals = members.map { messages.byId(it.id) }
+                    if (!MessageSources.canMerge(current, originals)) return@withTransaction false
+                    messages.setFilterResult(root.id, false, null, AIState.DONE)
+                    saveBatchBrief(root.id, verdict, current)
+                    messages.markMerged(members.map { it.id }, root.id)
+                    true
+                }
+            },
+            saveBrief = { id, verdict -> saveBatchBrief(id, verdict) }
+        ) { msgId, filtered, ruleName, aiState, summary ->
+            db.withTransaction {
+                val current = messages.byId(msgId) ?: return@withTransaction
+                // AI 请求期间手动划去/删除的消息不被重写为待办。
+                if (current.status != MsgStatus.PENDING || current.mergedIntoId != 0L ||
+                    current.aiState != AIState.PENDING_BATCH) return@withTransaction
+                messages.setFilterResult(msgId, filtered, ruleName, aiState)
+                if (summary.isNotBlank()) messages.setSummary(msgId, summary)
+                if (filtered && !keepFiltered) messages.deleteById(msgId)
+            }
         }
+    }
+
+    private suspend fun saveBatchBrief(id: Long, v: AiClient.BatchVerdict, previous: MessageEntity? = null) {
+        fun time(minutes: Int?) = if (minutes != null && minutes >= 0) "%02d:%02d".format(minutes / 60, minutes % 60) else ""
+        saveBrief(id, AiClient.MessageAiResult(false, null,
+            v.summary.ifBlank { previous?.summary.orEmpty() },
+            v.title.ifBlank { previous?.planTitle.orEmpty() },
+            v.place.ifBlank { previous?.planPlace.orEmpty() },
+            v.date.ifBlank { previous?.planEpochDay?.takeIf { it != 0L }?.let { LocalDate.ofEpochDay(it).toString() }.orEmpty() },
+            v.start.ifBlank { time(previous?.planStartMin) },
+            v.end.ifBlank { time(previous?.planEndMin) }))
     }
 
     /**

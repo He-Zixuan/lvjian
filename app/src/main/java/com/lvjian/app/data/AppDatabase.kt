@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
     //    旧会话 mode=0（REMIND）不代表用户开过接管，新状态一律默认关闭（任务书 05 第 6 节）
     // v6：rules 增加 action（0=过滤，1=保留）。旧规则没有这一列，默认过滤，行为与升级前相同。
     // v7：rules 增加 builtin（内置规则不可删）；messages 增加摘要和加入计划预填。
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -28,6 +28,12 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN mergedIntoId INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         /** v4→v5：monitored_apps 增加 takeover / takeoverChannelOk 两列（默认关闭接管） */
         val MIGRATION_4_5 = object : Migration(4, 5) {
@@ -65,7 +71,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "lvjian.db"
                 )
                     // v4→v5 显式迁移：新增两列默认值，已有消息/规则/群/计划/应用记录全部保留
-                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     // 仅作为更老版本的兜底（v1~v3 无迁移路径时才触发）；正常升级不经过这里
                     .fallbackToDestructiveMigration()
                     .build()
